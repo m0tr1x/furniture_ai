@@ -1,6 +1,4 @@
+python-telegram-bot==20.5
+vosk==0.3.45
 nltk==3.8.1
 scikit-learn==1.4.0
-python-telegram-bot==20.3
-speechrecognition==3.10.0
-pydub==0.25.1
-pymorphy2==0.9.1
