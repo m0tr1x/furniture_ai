@@ -34,18 +34,23 @@ class BotCore:
             self.logger.error(f"Ошибка загрузки phrases.json: {e}")
             return default_phrases
 
-
     def process_voice(self, voice_path: str) -> str:
-        """Обработка голоса с учетом речевых ошибок"""
+        """Обработка голоса с распознаванием текста и возвратом ответа"""
         try:
+            # Получаем распознанный текст
             recognized_text = self.voice_processor.recognize(voice_path)
+
+            # Если распознать не удалось
             if not recognized_text or "Ошибка" in recognized_text:
                 return random.choice(self.phrases["errors"]["voice"])
 
             intent = self.nlp.predict(recognized_text)
+            self.logger.info(f"Распознан интент: '{intent}' для текста: '{recognized_text}'")
             return self._get_response(intent)
+
         except Exception as e:
-            self.logger.error(f"Ошибка голоса: {e}")
+            # Логируем ошибку и возвращаем сообщение об ошибке
+            self.logger.error(f"Ошибка при обработке голоса: {e}")
             return random.choice(self.phrases["errors"]["voice"])
 
     def process_text(self, text: str) -> str:
@@ -67,48 +72,81 @@ class BotCore:
             self.logger.error(f"Ошибка: {e}")
             return random.choice(self.phrases["errors"]["default"])
 
-    def _get_response(self, intent: str) -> str:
-        """Усовершенствованный выбор ответа с интеллектуальным избеганием повторов"""
-        # Получаем все возможные ответы для интента
-        responses = self.phrases["intents"].get(intent, [])
+    def _get_response(self, intent: str, recognized_text: str = "") -> str:
+        """Усовершенствованный выбор наиболее подходящего ответа с интеллектуальным избеганием повторов"""
+        try:
+            # Получаем все возможные ответы для интента
+            intent_data = self.phrases["intents"].get(intent, {})
+            responses = intent_data.get('responses', [])
 
-        # Если нет ответов для интента, используем ответы по умолчанию
-        if not responses:
-            self.logger.warning(f"Нет фраз для интента: {intent}")
-            responses = self.phrases["errors"]["default"]
+            # Если нет ответов для интента, используем ответы по умолчанию
+            if not responses:
+                self.logger.warning(f"Нет фраз для интента: {intent}")
+                responses = self.phrases["errors"]["default"]
 
-        # Инициализируем историю ответов, если её нет
-        if not hasattr(self, '_response_history'):
-            self._response_history = {}
+            # Инициализируем историю ответов, если её нет
+            if not hasattr(self, '_response_history'):
+                self._response_history = {}
 
-        # Инициализируем историю для текущего интента, если её нет
-        if intent not in self._response_history:
-            self._response_history[intent] = {
-                'all_responses': responses.copy(),
-                'used_responses': [],
-                'last_response': None
-            }
+            # Инициализируем историю для текущего интента, если её нет
+            if intent not in self._response_history:
+                self._response_history[intent] = {
+                    'all_responses': responses.copy(),
+                    'used_responses': [],
+                    'last_response': None
+                }
 
-        # Получаем доступные (ещё не использованные) ответы
-        available = [
-            r for r in self._response_history[intent]['all_responses']
-            if r not in self._response_history[intent]['used_responses']
+            # Получаем доступные (ещё не использованные) ответы
+            available = [
+                r for r in self._response_history[intent]['all_responses']
+                if r not in self._response_history[intent]['used_responses']
+            ]
+
+            # Если все ответы уже использовались, сбрасываем историю
+            if not available:
+                self.logger.debug(f"Все ответы для интента '{intent}' были использованы, сбрасываем историю")
+                self._response_history[intent]['used_responses'] = []
+                available = self._response_history[intent]['all_responses'].copy()
+
+            # Выбираем наиболее подходящий ответ на основе схожести с распознанным текстом
+            response = self._select_most_relevant_response(available, recognized_text)
+
+            # Обновляем историю
+            self._response_history[intent]['used_responses'].append(response)
+            self._response_history[intent]['last_response'] = response
+
+            # Логируем выбор
+            self.logger.debug(f"Для интента '{intent}' выбран ответ: '{response}'")
+            self.logger.debug(f"Осталось доступных ответов: {len(available) - 1}")
+
+            return response
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при получении ответа для интента '{intent}': {str(e)}")
+            return random.choice(self.phrases["errors"]["default"])
+
+    def _select_most_relevant_response(self, available_responses, recognized_text):
+        """Выбор наиболее подходящего ответа на основе схожести с распознанным текстом"""
+        if not recognized_text:
+            # Если текст не распознан, выбираем случайный ответ
+            return random.choice(available_responses)
+
+        # Оценка схожести каждого ответа с распознанным текстом
+        similarities = [
+            (response, self._calculate_similarity(recognized_text, response))
+            for response in available_responses
         ]
 
-        # Если все ответы уже использовались, сбрасываем историю
-        if not available:
-            self.logger.debug(f"Все ответы для интента '{intent}' были использованы, сбрасываем историю")
-            self._response_history[intent]['used_responses'] = []
-            available = self._response_history[intent]['all_responses'].copy()
+        # Сортировка по схожести (от наибольшей)
+        similarities.sort(key=lambda x: x[1], reverse=True)
 
-        # Выбираем случайный ответ из доступных
-        response = random.choice(available)
+        # Возвращаем наиболее схожий ответ
+        return similarities[0][0]
 
-        # Обновляем историю
-        self._response_history[intent]['used_responses'].append(response)
-        self._response_history[intent]['last_response'] = response
-
-        self.logger.debug(f"Для интента '{intent}' выбран ответ: '{response}'")
-        self.logger.debug(f"Осталось доступных ответов: {len(available) - 1}")
-
-        return response
+    def _calculate_similarity(self, text1, text2):
+        """Простой алгоритм для оценки схожести текста (например, через совпадение ключевых слов)"""
+        # Для простоты, будем оценивать схожесть как количество общих слов
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        common_words = words1.intersection(words2)
+        return len(common_words)

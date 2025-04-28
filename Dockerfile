@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     libatomic1 \
     g++ \
     make \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Рабочая директория

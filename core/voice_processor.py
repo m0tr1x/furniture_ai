@@ -2,17 +2,18 @@ import logging
 import os
 import json
 from pathlib import Path
+import subprocess
 
 from vosk import Model, KaldiRecognizer
-import subprocess
 
 
 class VoiceProcessor:
     def __init__(self, model_path: str):
+        self.sample_rate = 16000
         self.logger = logging.getLogger(__name__)
         model_path = Path(model_path)
 
-        # Подробная проверка модели
+        # Проверка структуры модели
         required = {
             'am/final.mdl': 'Основная акустическая модель',
             'graph/HCLr.fst': 'Граф декодирования',
@@ -26,53 +27,72 @@ class VoiceProcessor:
                 raise FileNotFoundError(error)
 
         try:
-            from vosk import Model
-            self.model = Model(str(model_path))  # Явное преобразование в str
-            self.logger.info(f"Модель загружена из {model_path}")
+            self.model = Model(str(model_path))
+            self.logger.info(f"Модель Vosk загружена из {model_path}")
         except Exception as e:
-            self.logger.critical(f"Ошибка загрузки: {str(e)}")
+            self.logger.critical(f"Ошибка загрузки модели: {str(e)}")
             raise
 
-    def convert_to_wav(self, input_path):
-        """Конвертирует аудио в WAV формат"""
+    def convert_to_wav(self, input_path: str) -> str:
+        """Конвертирует входной файл в WAV формат с нужными параметрами"""
         output_path = "temp.wav"
         try:
-            subprocess.run([
+            result = subprocess.run([
                 "ffmpeg",
                 "-i", input_path,
                 "-ar", str(self.sample_rate),
                 "-ac", "1",
+                "-c:a", "pcm_s16le",  # <- добавлено!
                 "-y",
                 output_path
             ], check=True, capture_output=True)
-            return output_path
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Ошибка конвертации: {e.stderr.decode()}")
 
-    def recognize(self, audio_path):
+            self.logger.info(f"Конвертация прошла успешно: {input_path} -> {output_path}")
+            return output_path
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Ошибка ffmpeg: {e.stderr.decode()}")
+            raise RuntimeError(f"Ошибка конвертации аудио: {e.stderr.decode()}")
+
+    def recognize(self, audio_path: str) -> str:
         """Распознает речь из аудиофайла"""
+        temp_wav = None
+
         try:
-            # Конвертируем в WAV если нужно
             if not audio_path.endswith('.wav'):
-                audio_path = self.convert_to_wav(audio_path)
+                temp_wav = self.convert_to_wav(audio_path)
+                path_to_use = temp_wav
+            else:
+                path_to_use = audio_path
 
             recognizer = KaldiRecognizer(self.model, self.sample_rate)
 
-            with open(audio_path, "rb") as f:
+            text_chunks = []
+
+            with open(path_to_use, "rb") as f:
                 while True:
                     data = f.read(4000)
                     if not data:
                         break
                     if recognizer.AcceptWaveform(data):
-                        pass
+                        res = json.loads(recognizer.Result())
+                        if res.get("text"):
+                            text_chunks.append(res["text"])
 
-            result = json.loads(recognizer.FinalResult())
-            return result.get("text", "Не удалось распознать речь")
+            # Финальный результат
+            final_result = json.loads(recognizer.FinalResult())
+            if final_result.get("text"):
+                text_chunks.append(final_result["text"])
+
+            # Собираем полный текст
+            recognized_text = " ".join(text_chunks).strip()
+            return recognized_text if recognized_text else "Не удалось распознать речь"
 
         except Exception as e:
+            self.logger.error(f"Ошибка распознавания: {str(e)}")
             return f"Ошибка: {str(e)}"
+
         finally:
-            if 'audio_path' in locals() and audio_path != "temp.wav" and os.path.exists(audio_path):
-                os.remove(audio_path)
-            if os.path.exists("temp.wav"):
-                os.remove("temp.wav")
+            # Чистим только временные файлы
+            if temp_wav and os.path.exists(temp_wav):
+                os.remove(temp_wav)
