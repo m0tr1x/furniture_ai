@@ -4,14 +4,11 @@ from typing import Dict, List, Union, Optional
 import json
 from io import BytesIO
 import os
-
+import vosk
 import nltk
-import whisper
-
 from sklearn.svm import LinearSVC
 from sklearn.feature_extraction.text import TfidfVectorizer
 from pydub import AudioSegment
-import vosk
 
 # Probability of ad
 AD_PROBABILITY = 0.2
@@ -31,40 +28,74 @@ class Dialogues:
         self._classifier = None
         self._users_topics = {}
 
-        # Инициализация модели Whisper
+        # Инициализация модели Vosk
         try:
-            self.model = whisper.load_model("small")  # Загрузка модели Whisper
-            logging.info("Whisper model loaded successfully")
+            model_path = "/app/models"  # Путь к модели Vosk
+            if not os.path.exists(model_path):
+                logging.error(f"Vosk model not found at {model_path}")
+                raise FileNotFoundError(f"Vosk model not found at {model_path}")
+
+            self.model = vosk.Model(model_path)
+            self.recognizer = vosk.KaldiRecognizer(self.model, 16000)  # Устанавливаем частоту дискретизации 16kHz
+            logging.info("Vosk model loaded successfully")
         except Exception as e:
-            logging.error(f"Failed to load Whisper model: {str(e)}")
+            logging.error(f"Failed to load Vosk model: {str(e)}")
             self.model = None
+            self.recognizer = None
 
     def voice_to_text(self, voice_data: bytes) -> Optional[str]:
-        """Конвертация голосового сообщения в текст с использованием Whisper"""
+        """Конвертация голосового сообщения в текст с использованием Vosk"""
         if not self.model:
-            logging.error("Whisper model not loaded")
+            logging.error("Vosk model not initialized")
             return None
 
         try:
-            # Логируем начало работы
-            logging.info("Starting voice recognition using Whisper")
+            logging.info("Starting voice recognition using Vosk")
 
             # Сохраняем голосовое сообщение во временный файл
-            with open("temp_audio.oga", "wb") as f:
+            with open("temp_input.ogg", "wb") as f:
                 f.write(voice_data)
-            logging.info("Voice data written to file")
+            logging.info("Voice data written to temp_input.ogg")
 
-            # Распознаем речь с помощью Whisper
-            result = self.model.transcribe("temp_audio.oga")
-            logging.info("Whisper transcription complete")
+            # Загрузка аудио с помощью pydub
+            audio = AudioSegment.from_file("temp_input.ogg")
+            logging.info(f"Audio file loaded successfully with duration: {len(audio)} ms")
 
-            text = result["text"].strip()
-            if not text:
-                logging.warning("No speech recognized")
-                return None
+            # Гарантированно преобразуем в моно 16kHz 16-bit PCM WAV
+            audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+            audio.export("temp_audio.wav", format="wav")
+            logging.info("Audio converted to 16kHz mono 16-bit PCM WAV format")
 
-            logging.info(f"Recognized text: {text}")
-            return text
+            # 🟢 Создаём новый recognizer на каждый вызов!
+            recognizer = vosk.KaldiRecognizer(self.model, 16000)
+            logging.info(f"Created new recognizer object: {recognizer}")
+
+            with open("temp_audio.wav", "rb") as f:
+                while True:
+                    data = f.read(4000)
+                    if len(data) == 0:
+                        break
+                    if not recognizer.AcceptWaveform(data):
+                        partial = recognizer.PartialResult()
+                        logging.debug(f"Partial: {partial}")
+
+                result = recognizer.FinalResult()
+                logging.info(f"Final Vosk result raw: {result}")
+                result_json = json.loads(result)
+                text = result_json.get("text", "").strip()
+
+                if text:
+                    logging.info(f"Recognized text: {text}")
+                    return text
+                else:
+                    # Попробуем взять хотя бы partial
+                    partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
+                    if partial:
+                        logging.info(f"Recognized partial text: {partial}")
+                        return partial
+                    else:
+                        logging.warning("Speech not recognized by Vosk (even partial)")
+                        return None
 
         except Exception as e:
             logging.error(f"Voice recognition error: {str(e)}")
@@ -73,8 +104,6 @@ class Dialogues:
     def phrase_simplify(self, phrase: str) -> str:
         """Приведение фразы к нижнему регистру и удаление лишних символов"""
         return "".join(symbol for symbol in phrase.lower() if symbol in ALPHABET).strip()
-
-
 
     def next_message(
             self,
@@ -131,7 +160,6 @@ class Dialogues:
             return [random.choice(self.bot_config["failure"])]
 
 
-
     def parse_dialogues_from_file(self) -> None:
         """load and parse dialogues.txt """
 
@@ -151,7 +179,6 @@ class Dialogues:
             if question and question not in questions:
                 questions.add(question)
                 dialogues_filtered.append([question, answer])
-
 
         logging.info("Structuring")
         dialogues_structured = {}
@@ -191,13 +218,11 @@ class Dialogues:
                 intent_names.append(intent)
                 intent_examples.append(self.phrase_simplify(example))
 
-
         if self._vectorizer is None:
             self._vectorizer = TfidfVectorizer(analyzer="char", ngram_range=(3, 3))
 
         if self._classifier is None:
             self._classifier = LinearSVC(dual=True)
-
 
         logging.info("Learning")
         self._classifier.fit(self._vectorizer.fit_transform(intent_examples), intent_names)
@@ -212,7 +237,6 @@ class Dialogues:
         request = self.phrase_simplify(request)
         logging.info(f"Simplified: {request}")
 
-
         intent = self._classifier.predict(self._vectorizer.transform([request]))[0]
         logging.info(f'Intent for "{request}": {intent}')
         return intent
@@ -225,7 +249,6 @@ class Dialogues:
             pair for word in words if word in self._dialogues_structured for pair in self._dialogues_structured[word]
         ]
 
-
         answers = []
         for question, answer in mini_dataset:
             if abs(len(replica) - len(question)) / len(question) < DIALOGUES_THRESHOLD:
@@ -235,4 +258,3 @@ class Dialogues:
                     answers.append([distance_weighted, question, answer])
 
         return min(answers, key=lambda three: three[0])[2] if answers else None
-

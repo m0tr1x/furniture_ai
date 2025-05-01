@@ -3,10 +3,11 @@ import os
 import logging
 import asyncio
 from io import BytesIO
+from random import choice
+from gtts import gTTS
+
 from threading import Thread
 
-import sounddevice as sd
-import numpy as np
 from pydub import AudioSegment
 import pyttsx3
 from vosk import Model, KaldiRecognizer
@@ -28,7 +29,7 @@ VOSK_MODEL_PATH = "models/"  # Путь к модели Vosk
 
 # Инициализация синтезатора речи (TTS)
 engine = pyttsx3.init()
-engine.setProperty('rate', 150)  # Скорость речи
+engine.setProperty('rate', 50)  # Скорость речи
 engine.setProperty('voice', 'ru')  # Русский голос (должен быть установлен в системе)
 
 
@@ -58,8 +59,7 @@ class Bot:
 
         # Обработчики
         self._application.add_handler(CommandHandler("start", self._bot_callback_start))
-        self._application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self._bot_callback_message))
-        self._application.add_handler(MessageHandler(filters.VOICE, self._bot_callback_voice))
+        self._application.add_handler(MessageHandler(filters.TEXT | filters.VOICE, self._bot_callback_message_or_voice))
 
         # Запуск бота
         logging.info("starting bot polling")
@@ -72,61 +72,77 @@ class Bot:
         for response in responses:
             await context.bot.send_message(chat_id=chat_id, text=response)
 
-    async def _bot_callback_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработка текстовых сообщений"""
+    async def _bot_callback_message_or_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка текстовых и голосовых сообщений с случайным выбором способа ответа"""
         chat_id = update.effective_chat.id
         request_message = self._extract_text(update, context)
 
-        if not request_message:
-            return
-
-        responses = self._dialogues.next_message(request_message, chat_id)
-        for response in responses:
-            await context.bot.send_message(chat_id=chat_id, text=response)
-
-    async def _bot_callback_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработка голосовых сообщений"""
-        chat_id = update.effective_chat.id
-
-        # Получаем голосовое сообщение
-        voice = update.message.voice
-        voice_file = await context.bot.get_file(voice.file_id)
-
-        # Скачиваем и конвертируем в WAV
-        ogg_data = await voice_file.download_as_bytearray()
-        audio = AudioSegment.from_ogg(BytesIO(ogg_data))
-        wav_data = audio.export(format="wav").read()
-
-        # Распознаем голос в текст (Vosk)
-        try:
-            text = self._local_speech_to_text(wav_data)
-            if not text:
-                await context.bot.send_message(chat_id=chat_id, text="Не удалось распознать голосовое сообщение")
-                return
-        except Exception as e:
-            logging.error(f"Voice recognition error: {str(e)}")
-            await context.bot.send_message(chat_id=chat_id, text="Ошибка обработки голосового сообщения")
-            return
-
-        # Получаем ответ от бота
-        responses = self._dialogues.next_message(text, chat_id)
-
-        # Отправляем ответы (текст + голос)
-        for response in responses:
-            # Текстовый ответ
-            await context.bot.send_message(chat_id=chat_id, text=response)
-
-            # Голосовой ответ (локальный TTS)
+        # Если сообщение текстовое
+        if request_message:
             try:
-                voice_response = self._local_text_to_speech(response)
-                if voice_response:
-                    await context.bot.send_voice(
-                        chat_id=chat_id,
-                        voice=voice_response,
-                        caption=response[:200]  # Подпись к голосовому сообщению
-                    )
+                # Пробуем распознать текст из сообщения
+                text = request_message.strip()
+
+                if not text:
+                    return
+
+                # Получаем ответ от бота
+                responses = self._dialogues.next_message(text, chat_id)
+
+                # Случайным образом выбираем способ ответа: текстовый или голосовой
+                answer_type = choice(["text", "voice"])
+
+                if answer_type == "text":
+                    # Ответ текстом
+                    for response in responses:
+                        await context.bot.send_message(chat_id=chat_id, text=response)
+                else:
+                    # Ответ голосом
+                    for response in responses:
+                        voice_data = self._local_text_to_speech(response)
+                        await context.bot.send_voice(chat_id=chat_id, voice=voice_data)
+
             except Exception as e:
-                logging.error(f"Text-to-speech error: {str(e)}")
+                logging.error(f"Error in message processing: {str(e)}")
+                await context.bot.send_message(chat_id=chat_id, text="Произошла ошибка при обработке сообщения.")
+
+        # Если сообщение голосовое
+        elif update.message.voice:
+            try:
+                # Получаем голосовое сообщение
+                voice = update.message.voice
+                voice_file = await context.bot.get_file(voice.file_id)
+                ogg_data = await voice_file.download_as_bytearray()
+                audio = AudioSegment.from_ogg(BytesIO(ogg_data))
+                wav_data = audio.export(format="wav").read()
+
+                # Преобразуем голос в текст
+                loop = asyncio.get_event_loop()
+                text = await loop.run_in_executor(None, self._dialogues.voice_to_text, wav_data)
+
+                if not text:
+                    await context.bot.send_message(chat_id=chat_id, text="Не удалось распознать голосовое сообщение")
+                    return
+
+                # Получаем ответ от бота
+                responses = self._dialogues.next_message(text, chat_id)
+
+                # Случайным образом выбираем способ ответа: текстовый или голосовой
+                answer_type = choice(["text", "voice"])
+
+                if answer_type == "text":
+                    # Ответ текстом
+                    for response in responses:
+                        await context.bot.send_message(chat_id=chat_id, text=response)
+                else:
+                    # Ответ голосом
+                    for response in responses:
+                        voice_data = self._local_text_to_speech(response)
+                        await context.bot.send_voice(chat_id=chat_id, voice=voice_data)
+
+            except Exception as e:
+                logging.error(f"Voice recognition error: {str(e)}")
+                await context.bot.send_message(chat_id=chat_id, text="Ошибка обработки голосового сообщения")
 
     def _extract_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Извлекает текст из сообщения"""
@@ -138,31 +154,22 @@ class Bot:
             return update.message.text.strip()
         return ""
 
-    def _local_speech_to_text(self, wav_data: bytes) -> str:
-        """Распознавание речи через Vosk (оффлайн)"""
-        model = Model(VOSK_MODEL_PATH)
-        rec = KaldiRecognizer(model, 16000)  # Частота дискретизации (16 kHz)
-
-        # Распознаем речь
-        rec.AcceptWaveform(wav_data)
-        result = rec.Result()
-        result_json = json.loads(result)
-
-        return result_json.get("text", "")
-
     def _local_text_to_speech(self, text: str):
-        """Синтез речи через pyttsx3 (оффлайн)"""
-        # Сохраняем речь в файл
-        output_path = "temp_voice.mp3"
-        engine.save_to_file(text, output_path)
-        engine.runAndWait()
+        """Синтез речи через gTTS (Google Text-to-Speech)"""
+        try:
+            tts = gTTS(text, lang='ru')  # Указываем язык как русский
+            output_path = "temp_voice.mp3"
+            tts.save(output_path)
 
-        # Читаем файл и отправляем
-        with open(output_path, "rb") as f:
-            voice_data = BytesIO(f.read())
-            voice_data.name = "response.mp3"
+            # Читаем файл и отправляем
+            with open(output_path, "rb") as f:
+                voice_data = BytesIO(f.read())
+                voice_data.name = "response.mp3"
 
-        # Удаляем временный файл
-        os.remove(output_path)
+            # Удаляем временный файл
+            os.remove(output_path)
 
-        return voice_data
+            return voice_data
+        except Exception as e:
+            logging.error(f"Error in text-to-speech conversion: {str(e)}")
+            return None
