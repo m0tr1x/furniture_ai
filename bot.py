@@ -68,9 +68,12 @@ class Bot:
     async def _bot_callback_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка команды /start"""
         chat_id = update.effective_chat.id
-        responses = self._dialogues.next_message("start", chat_id)
-        for response in responses:
-            await context.bot.send_message(chat_id=chat_id, text=response)
+        welcome_text = (
+            "Привет! 😊 Я виртуальный помощник Домовёнок.\n"
+            "Давай поболтаем! Чем могу помочь?\n"
+            "Могу показать диваны, кровати, шкафы и другую мебель."
+        )
+        await context.bot.send_message(chat_id=chat_id, text=welcome_text)
 
     async def _bot_callback_message_or_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка текстовых и голосовых сообщений с случайным выбором способа ответа"""
