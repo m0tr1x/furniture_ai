@@ -1,0 +1,7 @@
+python-telegram-bot==20.5
+vosk==0.3.45
+nltk==3.8.1
+scikit-learn==1.4.0
+pydub
+pyttsx3
+gTTS
