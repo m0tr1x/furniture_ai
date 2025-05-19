@@ -5,6 +5,7 @@ import asyncio
 from io import BytesIO
 from random import choice
 from gtts import gTTS
+from telegram import BotCommand
 
 from threading import Thread
 
@@ -38,6 +39,7 @@ class Bot:
         self._dialogues = dialogues
         self._event_loop = None
         self._application = None
+        self.voice_enabled = {}
 
     def start(self) -> None:
         """Запуск бота"""
@@ -59,6 +61,8 @@ class Bot:
 
         # Обработчики
         self._application.add_handler(CommandHandler("start", self._bot_callback_start))
+        self._application.add_handler(CommandHandler("enable_voice", self._bot_enable_voice))
+        self._application.add_handler(CommandHandler("disable_voice", self._bot_disable_voice))
         self._application.add_handler(MessageHandler(filters.TEXT | filters.VOICE, self._bot_callback_message_or_voice))
 
         # Запуск бота
@@ -68,6 +72,13 @@ class Bot:
     async def _bot_callback_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка команды /start"""
         chat_id = update.effective_chat.id
+
+        commands = [
+            BotCommand("start", "Перезапустить бота"),
+            BotCommand("enable_voice", "Включить голосовые ответы"),
+            BotCommand("disable_voice", "Отключить голосовые ответы"),
+        ]
+        await self._application.bot.set_my_commands(commands)
         welcome_text = (
             "Привет! 😊 Я виртуальный помощник Домовёнок.\n"
             "Давай поболтаем! Чем могу помочь?\n"
@@ -78,6 +89,14 @@ class Bot:
     async def _bot_callback_message_or_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка текстовых и голосовых сообщений с случайным выбором способа ответа"""
         chat_id = update.effective_chat.id
+
+        # Установка команд
+        commands = [
+            BotCommand("start", "Перезапустить бота"),
+            BotCommand("enable_voice", "Включить голосовые ответы"),
+            BotCommand("disable_voice", "Отключить голосовые ответы"),
+        ]
+        await context.bot.set_my_commands(commands)
         request_message = self._extract_text(update, context)
 
         # Если сообщение текстовое
@@ -93,7 +112,10 @@ class Bot:
                 responses = self._dialogues.next_message(text, chat_id)
 
                 # Случайным образом выбираем способ ответа: текстовый или голосовой
-                answer_type = choice(["text", "voice"])
+                if self.voice_enabled.get(chat_id, True):  # по умолчанию голос включён
+                    answer_type = choice(["text", "voice"])
+                else:
+                    answer_type = "text"
 
                 if answer_type == "text":
                     # Ответ текстом
@@ -131,7 +153,10 @@ class Bot:
                 responses = self._dialogues.next_message(text, chat_id)
 
                 # Случайным образом выбираем способ ответа: текстовый или голосовой
-                answer_type = choice(["text", "voice"])
+                if self.voice_enabled.get(chat_id, True):  # по умолчанию голос включён
+                    answer_type = choice(["text", "voice"])
+                else:
+                    answer_type = "text"
 
                 if answer_type == "text":
                     # Ответ текстом
@@ -146,6 +171,17 @@ class Bot:
             except Exception as e:
                 logging.error(f"Voice recognition error: {str(e)}")
                 await context.bot.send_message(chat_id=chat_id, text="Ошибка обработки голосового сообщения")
+
+    async def _bot_enable_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
+        self.voice_enabled[chat_id] = True
+        await context.bot.send_message(chat_id=chat_id, text="Голосовой ответ включён ✅")
+
+    async def _bot_disable_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
+        self.voice_enabled[chat_id] = False
+        await context.bot.send_message(chat_id=chat_id, text="Голосовой ответ отключён ❌")
+
 
     def _extract_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Извлекает текст из сообщения"""
