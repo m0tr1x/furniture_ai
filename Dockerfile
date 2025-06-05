@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
 # 2. Рабочая директория
 WORKDIR /app
 
+COPY images/ /app/images/
 # 3. Установка Python-зависимостей
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

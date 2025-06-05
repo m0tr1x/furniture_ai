@@ -66,7 +66,7 @@ class Dialogues:
             audio.export("temp_audio.wav", format="wav")
             logging.info("Audio converted to 16kHz mono 16-bit PCM WAV format")
 
-            # 🟢 Создаём новый recognizer на каждый вызов!
+            #Создаём новый recognizer на каждый вызов!
             recognizer = vosk.KaldiRecognizer(self.model, 16000)
             logging.info(f"Created new recognizer object: {recognizer}")
 
@@ -100,6 +100,15 @@ class Dialogues:
         except Exception as e:
             logging.error(f"Voice recognition error: {str(e)}")
             return None
+
+    def get_pic(self, user_intent: str, user_topic: str) -> str | None:
+        # Проверяем, есть ли intent и topic в конфиге
+        if user_intent in self.bot_config["intents"]:
+            if user_topic in self.bot_config["intents"][user_intent]:
+                images = self.bot_config["intents"][user_intent]["any"].get("images")
+                if images and len(images) > 0:
+                    return images[0]  # возвращаем первую картинку
+        return None
 
     def phrase_simplify(self, phrase: str) -> str:
         """Приведение фразы к нижнему регистру и удаление лишних символов"""

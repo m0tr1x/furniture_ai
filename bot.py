@@ -6,6 +6,7 @@ from io import BytesIO
 from random import choice
 from gtts import gTTS
 from telegram import BotCommand
+from telegram import InputFile
 
 from threading import Thread
 
@@ -110,6 +111,25 @@ class Bot:
 
                 # Получаем ответ от бота
                 responses = self._dialogues.next_message(text, chat_id)
+                current_intent_name = self._dialogues.intent_predict(text)
+                intent_data = self._dialogues.bot_config.get(current_intent_name, {})
+                logging.info(f"intent_data: {intent_data}")
+
+                user_topic = "any"  # или другой topic, если есть контекст
+
+                # Используем get_pic для получения пути к картинке
+                image_path = self._dialogues.get_pic(current_intent_name, user_topic)
+                if image_path:
+                    abs_path = os.path.abspath(image_path)
+                    logging.info(f"File exists: {os.path.exists(abs_path)}, size: {os.path.getsize(abs_path)} bytes")
+                    logging.info(f"Found image: {image_path}")
+                    try:
+                        with open(abs_path, "rb") as photo_file:
+                            await context.bot.send_photo(chat_id=chat_id, photo=photo_file)
+                    except Exception as e:
+                        logging.error(f"Error sending image: {str(e)}")
+                else:
+                    logging.info(f"No images found for intent '{current_intent_name}' and topic '{user_topic}'")
 
                 # Случайным образом выбираем способ ответа: текстовый или голосовой
                 if self.voice_enabled.get(chat_id, True):  # по умолчанию голос включён
@@ -181,7 +201,6 @@ class Bot:
         chat_id = update.effective_chat.id
         self.voice_enabled[chat_id] = False
         await context.bot.send_message(chat_id=chat_id, text="Голосовой ответ отключён ❌")
-
 
     def _extract_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Извлекает текст из сообщения"""
